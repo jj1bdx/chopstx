@@ -61,6 +61,17 @@
 #define STM32_PLLCLKIN		(STM32_HSECLK / 1)
 #endif
 
+#if defined(STM32F103_HSE_NOT_USED)
+#undef STM32_PLLSRC
+#undef STM32_PLLCLKIN
+/* Internal clock: 8MHz */
+/* PLL source clock: 8MHz / 2*/
+/* Multiplier: x16 */
+#define STM32_PLLSRC    STM32_PLLSRC_HSI
+#define STM32_PLLCLKIN		(STM32_HSICLK / 2)
+#define STM32_PLLMUL_VALUE  16
+#endif /* !STM32F103_HSE_NOT_USED */
+
 #define STM32_SW		STM32_SW_PLL
 #define STM32_HPRE		STM32_HPRE_DIV1
 #define STM32_PPRE2		STM32_PPRE2_DIV1
@@ -110,6 +121,7 @@ static struct RCC *const RCC = ((struct RCC *const)RCC_BASE);
 #define RCC_CR_HSITRIM		0x000000F8
 #define RCC_CR_HSEON		0x00010000
 #define RCC_CR_HSERDY		0x00020000
+#define RCC_CR_HSEBYP		0x00040000
 #define RCC_CR_PLLON		0x01000000
 #define RCC_CR_PLLRDY		0x02000000
 
@@ -194,12 +206,18 @@ clock_init (void)
   while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSI)
     ;
 
+#if !defined(STM32F103_HSE_NOT_USED)
 #if !defined(MCU_STM32F0)
   /* HSE setup */
   RCC->CR |= RCC_CR_HSEON;
+#if defined(STM32F103_HSEBYP)
+  RCC->CR |= RCC_CR_HSEBYP;
+#else /* !defined(STM32F103_HSEBYP) */
   while (!(RCC->CR & RCC_CR_HSERDY))
     ;
-#endif
+#endif /* defined(STM32F103_HSEBYP) */
+#endif /* !defined(MCU_STM32F0) */
+#endif /* !defined(STM32F103_HSE_NOT_USED) */
 
   /* PLL setup */
   RCC->CFGR |= STM32_PLLMUL | STM32_PLLXTPRE | STM32_PLLSRC;
