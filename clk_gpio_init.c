@@ -46,6 +46,7 @@
 #define STM32_ADCPRE_DIV6       (2 << 14)
 
 #define STM32_USBPRE_DIV1P5     (0 << 22)
+#define STM32_USBPRE_DIV1     (1 << 22)
 
 #define STM32_MCO_NOCLOCK	(0 << 24)
 
@@ -61,17 +62,6 @@
 #define STM32_PLLCLKIN		(STM32_HSECLK / 1)
 #endif
 
-#if defined(STM32F103_HSE_NOT_USED)
-#undef STM32_PLLSRC
-#undef STM32_PLLCLKIN
-/* Internal clock: 8MHz */
-/* PLL source clock: 8MHz / 2*/
-/* Multiplier: x16 */
-#define STM32_PLLSRC    STM32_PLLSRC_HSI
-#define STM32_PLLCLKIN		(STM32_HSICLK / 2)
-#define STM32_PLLMUL_VALUE  16
-#endif /* !STM32F103_HSE_NOT_USED */
-
 #define STM32_SW		STM32_SW_PLL
 #define STM32_HPRE		STM32_HPRE_DIV1
 #define STM32_PPRE2		STM32_PPRE2_DIV1
@@ -84,6 +74,23 @@
 #define STM32_SYSCLK		STM32_PLLCLKOUT
 #define STM32_HCLK		(STM32_SYSCLK / 1)
 
+#if defined(STM32F103_HSE_NOT_USED)
+#undef STM32_PLLSRC
+#undef STM32_HSICLK
+#undef STM32_PLLCLKIN
+#undef STM32_PLLMUL_VALUE
+#undef STM32_USBPRE
+#undef STM32_PLLXTPRE
+#define STM32_PLLSRC    STM32_PLLSRC_HSI
+/* Internal clock: 8MHz */
+#define STM32_HSICLK    8000000
+/* PLL source clock: 4MHz */
+#define STM32_PLLCLKIN		(STM32_HSICLK / 2)
+/* System clock: 48MHz */
+#define STM32_PLLMUL_VALUE  12
+#define STM32_USBPRE    STM32_USBPRE_DIV1
+#define STM32_PLLXTPRE  STM32_PLLXTPRE_DIV1
+#endif /* !STM32F103_HSE_NOT_USED */
 
 #define PERIPH_BASE	0x40000000
 #define APBPERIPH_BASE   PERIPH_BASE
