@@ -5,9 +5,16 @@
 // #define FLASH_PAGE_SIZE 1024
 #define STM32F10X_MD		/* Medium-density device */
 
+/* MB1136 C-01 does not use HSE */
+#define STM32F103_HSE_NOT_USED          1
+
+#if !defined(STM32F103_HSE_NOT_USED)
 #define STM32_PLLXTPRE                  STM32_PLLXTPRE_DIV1
 #define STM32_PLLMUL_VALUE              9
 #define STM32_HSECLK                    8000000
+/* external clock */
+#define STM32F103_HSEBYP                1
+#endif /* !defined(STM32F103_HSE_NOT_USED) */
 
 #define GPIO_LED_BASE   GPIOA_BASE
 #define GPIO_LED_SET_TO_EMIT            5
