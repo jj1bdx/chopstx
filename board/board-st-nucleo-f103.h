@@ -5,14 +5,19 @@
 // #define FLASH_PAGE_SIZE 1024
 #define STM32F10X_MD		/* Medium-density device */
 
-/* MB1136 C-01 does not use HSE */
-#define STM32F103_HSE_NOT_USED          1
+/* MB1136 C-01 as default does not use HSE */
+/* #define STM32F103_HSE_NOT_USED          1 */
+/* 
+ * undef this flag when the MCO is connected
+ * from the debugger host part to the target
+ */
+#undef STM32F103_HSE_NOT_USED
 
 #if !defined(STM32F103_HSE_NOT_USED)
 #define STM32_PLLXTPRE                  STM32_PLLXTPRE_DIV1
 #define STM32_PLLMUL_VALUE              9
 #define STM32_HSECLK                    8000000
-/* external clock */
+/* for external clock feed (when MCO is connected) */
 #define STM32F103_HSEBYP                1
 #endif /* !defined(STM32F103_HSE_NOT_USED) */
 
