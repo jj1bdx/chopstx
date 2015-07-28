@@ -46,9 +46,9 @@ blk (void *arg)
   while (1)
     {
       v = 0;
-      chopstx_usec_wait (200*1000);
+      chopstx_usec_wait (100*1000);
       v = 1;
-      chopstx_usec_wait (200*1000);
+      chopstx_usec_wait (100*1000);
     }
 
   return NULL;
@@ -79,13 +79,14 @@ main (int argc, const char *argv[])
   chopstx_mutex_init (&usb_mtx);
   chopstx_cond_init (&cnd_usb);
 
+  v = 0;
   u = 0;
-  m = 50;
+  m = 5;
 
   chopstx_create (PRIO_PWM, __stackaddr_pwm, __stacksize_pwm, pwm, NULL);
   chopstx_create (PRIO_BLK, __stackaddr_blk, __stacksize_blk, blk, NULL);
 
-  chopstx_usec_wait (200*1000);
+  chopstx_usec_wait (1000*1000);
 
   chopstx_mutex_lock (&mtx);
   chopstx_cond_signal (&cnd0);
@@ -93,8 +94,14 @@ main (int argc, const char *argv[])
   chopstx_mutex_unlock (&mtx);
 
   while (1) {
-      u ^= 1;
-	  chopstx_usec_wait (200*1000*6);
+      u = 1;
+	  chopstx_usec_wait (800*1000);
+      u = 0;
+	  chopstx_usec_wait (200*1000);
+      m += 35;
+      if (m >= 100) {
+          m = 5;
+      }
   }
 
   return 0;
