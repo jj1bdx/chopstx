@@ -1,3 +1,15 @@
+2015-07-29  Niibe Yutaka  <gniibe@fsij.org>
+
+	* board/board-st-dongle.h: New.
+
+	* board/board-*.h (FLASH_PAGE_SIZE): Remove.
+
+2015-07-28  Niibe Yutaka  <gniibe@fsij.org>
+
+	* example-cdc/usb_stm32f103.c: Update from Gnuk.
+	* example-cdc/usb_lld.h: Ditto.
+	* example-cdc/usb-cdc.c: Follow the change.
+
 2015-07-15  Niibe Yutaka  <gniibe@fsij.org>
 
 	* VERSION: 0.07.
