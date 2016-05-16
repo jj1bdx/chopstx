@@ -1,3 +1,28 @@
+2016-05-16  NIIBE Yutaka  <gniibe@fsij.org>
+
+	* example-cdc/sys.c (nvic_enable_vector): Remove.
+	(usb_lld_sys_init): Don't setup NVIC priority.
+	(sys_version): sys version 3.0.
+
+2016-05-16  NIIBE Yutaka  <gniibe@fsij.org>
+
+	* chopstx.h (CHOPSTX_EXIT_SUCCESS, CHOPSTX_EXIT_CANCELED)
+	(CHOPSTX_EXIT_CANCELED_IN_SYNC): Remove.
+	(CHOPSTX_CANCELED): New.
+
+	* chopstx.c (chopstx_testcancel): Use CHOPSTX_CANCELED.
+	(chx_sched, chx_snooze): Re-define return values cleanly.
+	(chopstx_cancel): Use return value of chx_sched to cancel.
+	(chopstx_cond_wait, chopstx_join, chopstx_poll): Implement
+	cancellation rather easier way with return value of chx_sched.
+
+2016-05-15  NIIBE Yutaka  <gniibe@fsij.org>
+
+	* chopstx.c (chopstx_claim_irq): Don't register clean up function.
+	(chx_release_irq): Remove.
+	(chopstx_cancel): Disable IRQ when canceled at POLL.
+	(chopstx_poll): Fix IRQ handling.
+
 2016-05-13  NIIBE Yutaka  <gniibe@fsij.org>
 
 	* chopstx.c (chx_handle_intr): Call chx_request_preemption.
