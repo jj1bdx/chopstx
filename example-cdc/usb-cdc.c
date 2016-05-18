@@ -5,24 +5,80 @@
 #include "usb_lld.h"
 #include "tty.h"
 
-#define BUFSIZE 128
-#define FLAG_CONNECTED      (1 << 0)
-#define FLAG_SEND_READY     (1 << 1)
-#define FLAG_RECV_AVAIL     (1 << 2)
+static chopstx_intr_t usb_intr;
 
-struct tty {
-  uint32_t flags;
-  chopstx_mutex_t mtx;
-  chopstx_cond_t cnd;
-  chopstx_intr_t intr;
-  uint8_t inputline[BUFSIZE];   /* Line editing is supported */
-  uint8_t send_buf[BUFSIZE];	/* Sending ring buffer for echo back */
-  uint32_t inputline_len : 16;
-  uint32_t send_head : 8;
-  uint32_t send_tail : 8;
+struct line_coding
+{
+  uint32_t bitrate;
+  uint8_t format;
+  uint8_t paritytype;
+  uint8_t datatype;
+}  __attribute__((packed));
+
+static const struct line_coding line_coding0 = {
+  115200, /* baud rate: 115200    */
+  0x00,   /* stop bits: 1         */
+  0x00,   /* parity:    none      */
+  0x08    /* bits:      8         */
 };
 
-static struct tty tty;
+/*
+ * Currently, we only support a single TTY.
+ *
+ * It is possible to extend to support multiple TTYs, for multiple
+ * interfaces.
+ *
+ * In that case, add argument to TTY_OPEN function and
+ * modify TTY_GET function to get the TTY structure.  Functions which
+ * directy accesses TTY0 (usb_cb_device_reset and usb_cb_handle_event)
+ * should be modified, too.
+ *
+ * Modification of TTY_MAIN thread will be also needed to echo back
+ * input for each TTY, and the thread should run if one of TTY is
+ * opened.
+ */
+
+struct tty {
+  chopstx_mutex_t mtx;
+  chopstx_cond_t cnd;
+  uint8_t inputline[LINEBUFSIZE];   /* Line editing is supported */
+  uint8_t send_buf[LINEBUFSIZE];    /* Sending ring buffer for echo back */
+  uint32_t inputline_len    : 8;
+  uint32_t send_head        : 8;
+  uint32_t send_tail        : 8;
+  uint32_t flag_connected   : 1;
+  uint32_t flag_send_ready  : 1;
+  uint32_t flag_input_avail : 1;
+  uint32_t                  : 2;
+  uint32_t device_state     : 3;     /* USB device status */
+  struct line_coding line_coding;
+};
+
+static struct tty tty0;
+
+/*
+ * Locate TTY structure from interface number or endpoint number.
+ * Currently, it always returns tty0, because we only have the one.
+ */
+static struct tty *
+tty_get (int interface, uint8_t ep_num)
+{
+  struct tty *t = &tty0;
+
+  if (interface >= 0)
+    {
+      if (interface == 0)
+	t = &tty0;
+    }
+  else
+    {
+      if (ep_num == ENDP1 || ep_num == ENDP2 || ep_num == ENDP3)
+	t = &tty0;
+    }
+
+  return t;
+}
+
 
 #define ENDP0_RXADDR        (0x40)
 #define ENDP0_TXADDR        (0x80)
@@ -53,6 +109,8 @@ static const uint8_t vcom_device_desc[18] = {
   1				/* bNumConfigurations.              */
 };
 
+#define VCOM_FEATURE_BUS_POWERED	0x80
+
 /* Configuration Descriptor tree for a CDC.*/
 static const uint8_t vcom_config_desc[67] = {
   9,
@@ -62,7 +120,7 @@ static const uint8_t vcom_config_desc[67] = {
   0x02,				/* bNumInterfaces.                  */
   0x01,				/* bConfigurationValue.             */
   0,				/* iConfiguration.                  */
-  0x80,				/* bmAttributes (bus powered).      */
+  VCOM_FEATURE_BUS_POWERED,	/* bmAttributes.                    */
   50,				/* bMaxPower (100mA).               */
   /* Interface Descriptor.*/
   9,
@@ -175,21 +233,24 @@ static const uint8_t vcom_string3[28] = {
 
 #define NUM_INTERFACES 2
 
-static uint32_t bDeviceState = UNCONNECTED; /* USB device status */
-
 
 void
 usb_cb_device_reset (void)
 {
-  usb_lld_reset (vcom_config_desc[7]);
+  usb_lld_reset (VCOM_FEATURE_BUS_POWERED);
 
   /* Initialize Endpoint 0 */
   usb_lld_setup_endpoint (ENDP0, EP_CONTROL, 0, ENDP0_RXADDR, ENDP0_TXADDR, 64);
 
-  chopstx_mutex_lock (&tty.mtx);
-  tty.flags = 0;
-  bDeviceState = ATTACHED;
-  chopstx_mutex_unlock (&tty.mtx);
+  chopstx_mutex_lock (&tty0.mtx);
+  tty0.inputline_len = 0;
+  tty0.send_head = tty0.send_tail = 0;
+  tty0.flag_connected = 0;
+  tty0.flag_send_ready = 1;
+  tty0.flag_input_avail = 0;
+  tty0.device_state = ATTACHED;
+  memcpy (&tty0.line_coding, &line_coding0, sizeof (struct line_coding));
+  chopstx_mutex_unlock (&tty0.mtx);
 }
 
 
@@ -200,32 +261,19 @@ usb_cb_ctrl_write_finish (uint8_t req, uint8_t req_no, struct req_args *arg)
 {
   uint8_t type_rcp = req & (REQUEST_TYPE|RECIPIENT);
 
-  if (type_rcp == (CLASS_REQUEST | INTERFACE_RECIPIENT)
+  if (type_rcp == (CLASS_REQUEST | INTERFACE_RECIPIENT) && arg->index == 0
       && USB_SETUP_SET (req) && req_no == USB_CDC_REQ_SET_CONTROL_LINE_STATE)
     {
+      struct tty *t = tty_get (arg->index, 0);
+
       /* Open/close the connection.  */
-      chopstx_mutex_lock (&tty.mtx);
-      tty.flags &= ~FLAG_CONNECTED;
-      tty.flags |= ((arg->value & CDC_CTRL_DTR) != 0)? FLAG_CONNECTED : 0;
-      chopstx_cond_signal (&tty.cnd);
-      chopstx_mutex_unlock (&tty.mtx);
+      chopstx_mutex_lock (&t->mtx);
+      t->flag_connected = ((arg->value & CDC_CTRL_DTR) != 0);
+      chopstx_cond_signal (&t->cnd);
+      chopstx_mutex_unlock (&t->mtx);
     }
 }
 
-struct line_coding
-{
-  uint32_t bitrate;
-  uint8_t format;
-  uint8_t paritytype;
-  uint8_t datatype;
-}  __attribute__((packed));
-
-static struct line_coding line_coding = {
-  115200, /* baud rate: 115200    */
-  0x00,   /* stop bits: 1         */
-  0x00,   /* parity:    none      */
-  0x08    /* bits:      8         */
-};
 
 
 static int
@@ -233,15 +281,21 @@ vcom_port_data_setup (uint8_t req, uint8_t req_no, struct req_args *arg)
 {
   if (USB_SETUP_GET (req))
     {
+      struct tty *t = tty_get (arg->index, 0);
+
       if (req_no == USB_CDC_REQ_GET_LINE_CODING)
-	return usb_lld_reply_request (&line_coding, sizeof(line_coding), arg);
+	return usb_lld_reply_request (&t->line_coding,
+				      sizeof (struct line_coding), arg);
     }
   else  /* USB_SETUP_SET (req) */
     {
       if (req_no == USB_CDC_REQ_SET_LINE_CODING
-	  && arg->len == sizeof (line_coding))
+	  && arg->len == sizeof (struct line_coding))
 	{
-	  usb_lld_set_data_to_recv (&line_coding, sizeof (line_coding));
+	  struct tty *t = tty_get (arg->index, 0);
+
+	  usb_lld_set_data_to_recv (&t->line_coding,
+				    sizeof (struct line_coding));
 	  return USB_SUCCESS;
 	}
       else if (req_no == USB_CDC_REQ_SET_CONTROL_LINE_STATE)
@@ -344,7 +398,9 @@ usb_cb_handle_event (uint8_t event_type, uint16_t value)
   switch (event_type)
     {
     case USB_EVENT_ADDRESS:
-      bDeviceState = ADDRESSED;
+      chopstx_mutex_lock (&tty0.mtx);
+      tty0.device_state = ADDRESSED;
+      chopstx_mutex_unlock (&tty0.mtx);
       return USB_SUCCESS;
     case USB_EVENT_CONFIG:
       current_conf = usb_lld_current_configuration ();
@@ -356,7 +412,9 @@ usb_cb_handle_event (uint8_t event_type, uint16_t value)
 	  usb_lld_set_configuration (1);
 	  for (i = 0; i < NUM_INTERFACES; i++)
 	    vcom_setup_endpoints_for_interface (i, 0);
-	  bDeviceState = CONFIGURED;
+	  chopstx_mutex_lock (&tty0.mtx);
+	  tty0.device_state = CONFIGURED;
+	  chopstx_mutex_unlock (&tty0.mtx);
 	}
       else if (current_conf != value)
 	{
@@ -366,11 +424,11 @@ usb_cb_handle_event (uint8_t event_type, uint16_t value)
 	  usb_lld_set_configuration (0);
 	  for (i = 0; i < NUM_INTERFACES; i++)
 	    vcom_setup_endpoints_for_interface (i, 1);
-	  bDeviceState = ADDRESSED;
+	  chopstx_mutex_lock (&tty0.mtx);
+	  tty0.device_state = ADDRESSED;
+	  chopstx_mutex_unlock (&tty0.mtx);
 	}
       /* Do nothing when current_conf == value */
-      return USB_SUCCESS;
-
       return USB_SUCCESS;
     default:
       break;
@@ -415,61 +473,63 @@ usb_cb_interface (uint8_t cmd, struct req_args *arg)
  * Put a character into the ring buffer to be send back.
  */
 static void
-put_char_to_ringbuffer (int c)
+put_char_to_ringbuffer (struct tty *t, int c)
 {
-  uint32_t next = (tty.send_tail + 1) % BUFSIZE;
+  uint32_t next = (t->send_tail + 1) % LINEBUFSIZE;
 
-  if (tty.send_head == next)
+  if (t->send_head == next)
     /* full */
     /* All that we can do is ignore this char. */
     return;
   
-  tty.send_buf[tty.send_tail] = c;
-  tty.send_tail = next;
+  t->send_buf[t->send_tail] = c;
+  t->send_tail = next;
 }
 
 /*
  * Get characters from ring buffer into S.
  */
 static int
-get_chars_from_ringbuffer (uint8_t *s, int len)
+get_chars_from_ringbuffer (struct tty *t, uint8_t *s, int len)
 {
   int i = 0;
 
-  if (tty.send_head == tty.send_tail)
+  if (t->send_head == t->send_tail)
     /* Empty */
     return i;
 
   do
     {
-      s[i++] = tty.send_buf[tty.send_head];
-      tty.send_head = (tty.send_head + 1) % BUFSIZE;
+      s[i++] = t->send_buf[t->send_head];
+      t->send_head = (t->send_head + 1) % LINEBUFSIZE;
     }
-  while (tty.send_head != tty.send_tail && i < len);
+  while (t->send_head != t->send_tail && i < len);
 
   return i;
 }
 
 
 static void
-tty_echo_char (int c)
+tty_echo_char (struct tty *t, int c)
 {
-  put_char_to_ringbuffer (c);
+  put_char_to_ringbuffer (t, c);
 }
 
 
 void
 usb_cb_tx_done (uint8_t ep_num)
 {
+  struct tty *t = tty_get (-1, ep_num);
+
   if (ep_num == ENDP1)
     {
-      chopstx_mutex_lock (&tty.mtx);
-      if ((tty.flags & FLAG_SEND_READY) == 0)
+      chopstx_mutex_lock (&t->mtx);
+      if (t->flag_send_ready == 0)
 	{
-	  tty.flags |= FLAG_SEND_READY;
-	  chopstx_cond_signal (&tty.cnd);
+	  t->flag_send_ready = 1;
+	  chopstx_cond_signal (&t->cnd);
 	}
-      chopstx_mutex_unlock (&tty.mtx);
+      chopstx_mutex_unlock (&t->mtx);
     }
   else if (ep_num == ENDP2)
     {
@@ -479,60 +539,60 @@ usb_cb_tx_done (uint8_t ep_num)
 
 
 static int
-tty_input_char (int c)
+tty_input_char (struct tty *t, int c)
 {
   unsigned int i;
   int r = 0;
 
   /* Process DEL, C-U, C-R, and RET as editing command. */
-  chopstx_mutex_lock (&tty.mtx);
+  chopstx_mutex_lock (&t->mtx);
   switch (c)
     {
     case 0x0d: /* Control-M */
-      tty_echo_char (0x0d);
-      tty_echo_char (0x0a);
-      tty.flags |= FLAG_RECV_AVAIL;
-      chopstx_cond_signal (&tty.cnd);
+      tty_echo_char (t, 0x0d);
+      tty_echo_char (t, 0x0a);
+      t->flag_input_avail = 1;
       r = 1;
+      chopstx_cond_signal (&t->cnd);
       break;
     case 0x12: /* Control-R */
-      tty_echo_char ('^');
-      tty_echo_char ('R');
-      tty_echo_char (0x0d);
-      tty_echo_char (0x0a);
-      for (i = 0; i < tty.inputline_len; i++)
-	tty_echo_char (tty.inputline[i]);
+      tty_echo_char (t, '^');
+      tty_echo_char (t, 'R');
+      tty_echo_char (t, 0x0d);
+      tty_echo_char (t, 0x0a);
+      for (i = 0; i < t->inputline_len; i++)
+	tty_echo_char (t, t->inputline[i]);
       break;
     case 0x15: /* Control-U */
-      for (i = 0; i < tty.inputline_len; i++)
+      for (i = 0; i < t->inputline_len; i++)
 	{
-	  tty_echo_char (0x08);
-	  tty_echo_char (0x20);
-	  tty_echo_char (0x08);
+	  tty_echo_char (t, 0x08);
+	  tty_echo_char (t, 0x20);
+	  tty_echo_char (t, 0x08);
 	}
-      tty.inputline_len = 0;
+      t->inputline_len = 0;
       break;
     case 0x7f: /* DEL    */
-      if (tty.inputline_len > 0)
+      if (t->inputline_len > 0)
 	{
-	  tty_echo_char (0x08);
-	  tty_echo_char (0x20);
-	  tty_echo_char (0x08);
-	  tty.inputline_len--;
+	  tty_echo_char (t, 0x08);
+	  tty_echo_char (t, 0x20);
+	  tty_echo_char (t, 0x08);
+	  t->inputline_len--;
 	}
       break;
     default:
-      if (tty.inputline_len < sizeof (tty.inputline))
+      if (t->inputline_len < sizeof (t->inputline))
 	{
-	  tty_echo_char (c);
-	  tty.inputline[tty.inputline_len++] = c;
+	  tty_echo_char (t, c);
+	  t->inputline[t->inputline_len++] = c;
 	}
       else
 	/* Beep */
-	tty_echo_char (0x0a);
+	tty_echo_char (t, 0x0a);
       break;
     }
-  chopstx_mutex_unlock (&tty.mtx);
+  chopstx_mutex_unlock (&t->mtx);
   return r;
 }
 
@@ -540,6 +600,7 @@ void
 usb_cb_rx_ready (uint8_t ep_num)
 {
   uint8_t recv_buf[64];
+  struct tty *t = tty_get (-1, ep_num);
 
   if (ep_num == ENDP3)
     {
@@ -548,13 +609,13 @@ usb_cb_rx_ready (uint8_t ep_num)
       r = usb_lld_rx_data_len (ENDP3);
       usb_lld_rxcpy (recv_buf, ep_num, 0, r);
       for (i = 0; i < r; i++)
-	if (tty_input_char (recv_buf[i]))
+	if (tty_input_char (t, recv_buf[i]))
 	  break;
 
-      chopstx_mutex_lock (&tty.mtx);
-      if ((tty.flags & FLAG_RECV_AVAIL) == 0)
+      chopstx_mutex_lock (&t->mtx);
+      if (t->flag_input_avail == 0)
 	usb_lld_rx_enable (ENDP3);
-      chopstx_mutex_unlock (&tty.mtx);
+      chopstx_mutex_unlock (&t->mtx);
     }
 }
 
@@ -570,22 +631,25 @@ const size_t __stacksize_tty = (size_t)&__process3_stack_size__;
 struct tty *
 tty_open (void)
 {
-  chopstx_mutex_init (&tty.mtx);
-  chopstx_cond_init (&tty.cnd);
-  tty.flags = 0;
-  tty.send_head = tty.send_tail = 0;
-  tty.inputline_len = 0;
+  chopstx_mutex_init (&tty0.mtx);
+  chopstx_cond_init (&tty0.cnd);
+  tty0.inputline_len = 0;
+  tty0.send_head = tty0.send_tail = 0;
+  tty0.flag_connected = 0;
+  tty0.flag_send_ready = 1;
+  tty0.flag_input_avail = 0;
+  tty0.device_state = UNCONNECTED;
+  memcpy (&tty0.line_coding, &line_coding0, sizeof (struct line_coding));
 
-  chopstx_create (PRIO_TTY, __stackaddr_tty, __stacksize_tty,
-		  tty_main, NULL);
-  return &tty;
+  chopstx_create (PRIO_TTY, __stackaddr_tty, __stacksize_tty, tty_main, &tty0);
+  return &tty0;
 }
 
 
 static void *
 tty_main (void *arg)
 {
-  (void)arg;
+  struct tty *t = arg;
 
 #if defined(OLDER_SYS_H)
   /*
@@ -605,36 +669,35 @@ tty_main (void *arg)
    * chopstx_claim_irq after usb_lld_init overrides that.
    *
    */
-  usb_lld_init (0x80);		/* Bus powered. */
-  chopstx_claim_irq (&tty.intr, INTR_REQ_USB);
+  usb_lld_init (VCOM_FEATURE_BUS_POWERED);
+  chopstx_claim_irq (&usb_intr, INTR_REQ_USB);
   usb_interrupt_handler ();
 #else
-  chopstx_claim_irq (&tty.intr, INTR_REQ_USB);
-  usb_lld_init (0x80);		/* Bus powered. */
+  chopstx_claim_irq (&usb_intr, INTR_REQ_USB);
+  usb_lld_init (VCOM_FEATURE_BUS_POWERED);
 #endif
 
   while (1)
     {
-      chopstx_poll (NULL, 1, &tty.intr);
-      if (tty.intr.ready)
+      chopstx_poll (NULL, 1, &usb_intr);
+      if (usb_intr.ready)
 	usb_interrupt_handler ();
 
-      chopstx_mutex_lock (&tty.mtx);
-      if (bDeviceState == CONFIGURED
-	  && (tty.flags & FLAG_CONNECTED)
-	  && (tty.flags & FLAG_SEND_READY))
+      chopstx_mutex_lock (&t->mtx);
+      if (t->device_state == CONFIGURED && t->flag_connected
+	  && t->flag_send_ready)
 	{
 	  uint8_t line[32];
-	  int len = get_chars_from_ringbuffer (line, sizeof (len));
+	  int len = get_chars_from_ringbuffer (t, line, sizeof (len));
 
 	  if (len)
 	    {
 	      usb_lld_txcpy (line, ENDP1, 0, len);
 	      usb_lld_tx_enable (ENDP1, len);
-	      tty.flags &= ~FLAG_SEND_READY;
+	      t->flag_send_ready = 0;
 	    }
 	}
-      chopstx_mutex_unlock (&tty.mtx);
+      chopstx_mutex_unlock (&t->mtx);
     }
 
   return NULL;
@@ -645,7 +708,7 @@ void
 tty_wait_configured (struct tty *t)
 {
   chopstx_mutex_lock (&t->mtx);
-  while (bDeviceState != CONFIGURED)
+  while (t->device_state != CONFIGURED)
     chopstx_cond_wait (&t->cnd, &t->mtx);
   chopstx_mutex_unlock (&t->mtx);
 }
@@ -655,22 +718,23 @@ void
 tty_wait_connection (struct tty *t)
 {
   chopstx_mutex_lock (&t->mtx);
-  while ((t->flags & FLAG_CONNECTED) == 0)
+  while (t->flag_connected == 0)
     chopstx_cond_wait (&t->cnd, &t->mtx);
-  t->flags |= FLAG_SEND_READY;
-  t->flags &= ~FLAG_RECV_AVAIL;
+  t->flag_send_ready = 1;
+  t->flag_input_avail = 0;
   t->send_head = t->send_tail = 0;
   t->inputline_len = 0;
+  usb_lld_rx_enable (ENDP3);	/* Accept input for line */
   chopstx_mutex_unlock (&t->mtx);
 }
 
 static int
 check_tx (struct tty *t)
 {
-  if ((t->flags & FLAG_SEND_READY))
+  if (t->flag_send_ready)
     /* TX done */
     return 1;
-  if ((t->flags & FLAG_CONNECTED) == 0)
+  if (t->flag_connected == 0)
     /* Disconnected */
     return -1;
   return 0;
@@ -695,7 +759,7 @@ tty_send (struct tty *t, uint8_t *buf, int len)
 	{
 	  usb_lld_txcpy (p, ENDP1, 0, count);
 	  usb_lld_tx_enable (ENDP1, count);
-	  t->flags &= ~FLAG_SEND_READY;
+	  t->flag_send_ready = 0;
 	}
       chopstx_mutex_unlock (&t->mtx);
 
@@ -719,10 +783,10 @@ check_rx (void *arg)
 {
   struct tty *t = arg;
 
-  if ((t->flags & FLAG_RECV_AVAIL))
+  if (t->flag_input_avail)
     /* RX */
     return 1;
-  if ((t->flags & FLAG_CONNECTED) == 0)
+  if (t->flag_connected == 0)
     /* Disconnected */
     return 1;
   return 0;
@@ -733,11 +797,6 @@ tty_recv (struct tty *t, uint8_t *buf, uint32_t *timeout)
 {
   int r;
   chopstx_poll_cond_t poll_desc;
-
-  chopstx_mutex_unlock (&t->mtx);
-  if ((t->flags & FLAG_RECV_AVAIL) == 0)
-    usb_lld_rx_enable (ENDP3);
-  chopstx_mutex_unlock (&t->mtx);
 
   poll_desc.type = CHOPSTX_POLL_COND;
   poll_desc.ready = 0;
@@ -757,13 +816,13 @@ tty_recv (struct tty *t, uint8_t *buf, uint32_t *timeout)
     }
 
   chopstx_mutex_lock (&t->mtx);
-  if ((t->flags & FLAG_CONNECTED) == 0)
+  if (t->flag_connected == 0)
     r = -1;
-  else if ((t->flags & FLAG_RECV_AVAIL))
+  else if (t->flag_input_avail)
     {
       r = t->inputline_len;
       memcpy (buf, t->inputline, r);
-      t->flags &= ~FLAG_RECV_AVAIL;
+      t->flag_input_avail = 0;
       usb_lld_rx_enable (ENDP3);
       t->inputline_len = 0;
     }
