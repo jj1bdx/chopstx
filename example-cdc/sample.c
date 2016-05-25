@@ -119,7 +119,7 @@ main (int argc, const char *argv[])
       u = 1;
       tty_wait_connection (tty);
 
-      chopstx_usec_wait (500*1000);
+      chopstx_usec_wait (50*1000);
 
       /* Send ZLP at the beginning.  */
       tty_send (tty, s, 0);
@@ -142,8 +142,10 @@ main (int argc, const char *argv[])
 	  if (size < 0)
 	    break;
 
-	  if (usec)
+	  if (size)
 	    {
+	      size--;
+
 	      s[0] = hexchar (size >> 4);
 	      s[1] = hexchar (size & 0x0f);
 	      s[2] = ':';

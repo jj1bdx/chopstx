@@ -4,11 +4,9 @@
 #include <chopstx.h>
 
 #include "usb_lld.h"
-#include "stream.h"
+#include "tty.h"
 #include "board.h"
-
-#include "crc32.h"
-#include "adc.h"
+#include "command.h"
 
 struct GPIO {
   volatile uint32_t PDOR; /* Port Data Output Register    */
@@ -93,52 +91,18 @@ blk (void *arg)
   return NULL;
 }
 
-#define INTR_REQ_USB 24
 
-static void *
-usb_intr (void *arg)
-{
-  extern void usb_lld_init (uint8_t feature);
-  extern void usb_interrupt_handler (void);
-
-  chopstx_intr_t interrupt;
-
-  (void)arg;
-  chopstx_claim_irq (&interrupt, INTR_REQ_USB);
-  usb_lld_init (0x80);		/* Bus powered. */
-
-  while (1)
-    {
-      chopstx_intr_wait (&interrupt);
-
-      /* Process interrupt. */
-      usb_interrupt_handler ();
-    }
-
-  return NULL;
-}
-
-#if defined(BUSY_LOOP)
-#define PRIO_PWM (CHOPSTX_SCHED_RR|1)
-#define PRIO_BLK (CHOPSTX_SCHED_RR|1)
-#else
 #define PRIO_PWM 3
 #define PRIO_BLK 2
-#endif
-#define PRIO_INTR 4
 
 extern uint8_t __process1_stack_base__, __process1_stack_size__;
 extern uint8_t __process2_stack_base__, __process2_stack_size__;
-extern uint8_t __process3_stack_base__, __process3_stack_size__;
 
 const uint32_t __stackaddr_pwm = (uint32_t)&__process1_stack_base__;
 const size_t __stacksize_pwm = (size_t)&__process1_stack_size__;
 
 const uint32_t __stackaddr_blk = (uint32_t)&__process2_stack_base__;
 const size_t __stacksize_blk = (size_t)&__process2_stack_size__;
-
-const uint32_t __stackaddr_intr = (uint32_t)&__process3_stack_base__;
-const size_t __stacksize_intr = (size_t)&__process3_stack_size__;
 
 
 static char hexchar (uint8_t x)
@@ -153,43 +117,23 @@ static char hexchar (uint8_t x)
 }
 
 
-static int
-check_recv (void *arg)
-{
-  struct stream *s = arg;
-  if ((s->flags & FLAG_CONNECTED) == 0)
-    return 1;
-  if ((s->flags & FLAG_RECV_AVAIL))
-    return 1;
-  return 0;
-}
-
-
 int
 main (int argc, const char *argv[])
 {
-  struct stream *st;
+  struct tty *tty;
   uint8_t count;
-  extern uint32_t bDeviceState;
 
   (void)argc;
   (void)argv;
-
-  adc_init ();
-  adc_start ();
 
   chopstx_mutex_init (&mtx);
   chopstx_cond_init (&cnd0);
   chopstx_cond_init (&cnd1);
 
-  st = stream_open ();
-
   m = 10;
 
   chopstx_create (PRIO_PWM, __stackaddr_pwm, __stacksize_pwm, pwm, NULL);
   chopstx_create (PRIO_BLK, __stackaddr_blk, __stacksize_blk, blk, NULL);
-  chopstx_create (PRIO_INTR, __stackaddr_intr, __stacksize_intr,
-		  usb_intr, NULL);
 
   chopstx_usec_wait (200*1000);
 
@@ -199,98 +143,61 @@ main (int argc, const char *argv[])
   chopstx_mutex_unlock (&mtx);
 
   u = 1;
-  while (bDeviceState != CONFIGURED)
-    chopstx_usec_wait (500*1000);
+
+  tty = tty_open ();
+  tty_wait_configured (tty);
 
   count = 0;
+  m = 50;
   while (1)
     {
-      uint8_t s[64];
+      uint8_t s[LINEBUFSIZE];
 
+    connection_loop:
       u = 1;
-      if (stream_wait_connection (st) < 0)
-	{
-	  chopstx_usec_wait (1000*1000);
-	  continue;
-	}
+      tty_wait_connection (tty);
 
-      chopstx_usec_wait (500*1000);
+      chopstx_usec_wait (50*1000);
 
       /* Send ZLP at the beginning.  */
-      stream_send (st, s, 0);
+      tty_send (tty, s, 0);
 
       memcpy (s, "xx: Hello, World with Chopstx!\r\n", 32);
       s[0] = hexchar (count >> 4);
       s[1] = hexchar (count & 0x0f);
       count++;
 
-      if (stream_send (st, s, 32) < 0)
+      if (tty_send (tty, s, 32) < 0)
 	continue;
 
       while (1)
 	{
-	  int size;
 	  uint32_t usec;
-	  struct chx_poll_cond poll_desc;
 
-	  poll_desc.type = CHOPSTX_POLL_COND;
-	  poll_desc.ready = 0;
-	  poll_desc.cond = &st->cnd;
-	  poll_desc.mutex = &st->mtx;
-	  poll_desc.check = check_recv;
-	  poll_desc.arg = st;
+	  /* Prompt */
+	  if (tty_send (tty, (uint8_t *)"> ", 2) < 0)
+	    break;
 
-	  /* With chopstx_poll, we can do timed cond_wait */
-	  usec = 3000000;
-	  if (chopstx_poll (&usec, 1, &poll_desc))
+	  usec = 3000000;	/* 3.0 seconds */
+	  while (1)
 	    {
-	      size = stream_recv (st, s + 4);
+	      int size = tty_recv (tty, s, &usec);
+	      u ^= 1;
 
 	      if (size < 0)
+		goto connection_loop;
+
+	      if (size == 1)
+		/* Do nothing but prompt again.  */
 		break;
-
-	      if (size >= 0)
+	      else if (size)
 		{
-		  unsigned int value;
-
-		  if (s[4] == 't')
-		    {
-		      s[0] = 'T';
-		      s[1] = 'M';
-
-		      adc_start_conversion (0, 1);
-		      adc_wait_completion (NULL);
-		      value = adc_buf[0];
-		    }
-		  else
-		    {
-		      int i;
-
-		      crc32_init ();
-		      s[0] = hexchar (size >> 4);
-		      s[1] = hexchar (size & 0x0f);
-
-		      for (i = 0; i < size; i++)
-			crc32_u8 (s[4 + i]);
-		      value = crc32_value () ^ 0xffffffff;
-		    }
-
-		  s[4] = hexchar (value >> 28);
-		  s[5] = hexchar (value >> 24);
-		  s[6] = hexchar (value >> 20);
-		  s[7] = hexchar (value >> 16);
-		  s[8] = hexchar (value >> 12);
-		  s[9] = hexchar (value >> 8);
-		  s[10] = hexchar (value >> 4);
-		  s[11] = hexchar (value);
-		  s[12] = '\r';
-		  s[13] = '\n';
-		  if (stream_send (st, s, 14) < 0)
-		    break;
+		  /* Newline into NUL */
+		  s[size - 1] = 0;
+		  cmd_dispatch (tty, (char *)s);
+		  break;
 		}
 	    }
-
-	  u ^= 1;
 	}
     }
 

@@ -378,8 +378,7 @@ vcom_setup_endpoints_for_interface (uint16_t interface, int stop)
 	{
 	  usb_lld_setup_endpoint (ENDP1, EP_BULK, 0, 0, ENDP1_TXADDR, 0);
 	  usb_lld_setup_endpoint (ENDP3, EP_BULK, 0, ENDP3_RXADDR, 0, 64);
-	  /* Start with no data receiving */
-	  usb_lld_stall_rx (ENDP3);
+	  /* Start with no data receiving (ENDP3 not enabled)*/
 	}
       else
 	{
@@ -549,6 +548,7 @@ tty_input_char (struct tty *t, int c)
   switch (c)
     {
     case 0x0d: /* Control-M */
+      t->inputline[t->inputline_len++] = '\n';
       tty_echo_char (t, 0x0d);
       tty_echo_char (t, 0x0a);
       t->flag_input_avail = 1;
@@ -582,7 +582,7 @@ tty_input_char (struct tty *t, int c)
 	}
       break;
     default:
-      if (t->inputline_len < sizeof (t->inputline))
+      if (t->inputline_len < sizeof (t->inputline) - 1)
 	{
 	  tty_echo_char (t, c);
 	  t->inputline[t->inputline_len++] = c;
@@ -792,6 +792,12 @@ check_rx (void *arg)
   return 0;
 }
 
+/*
+ * Returns -1 on connection close
+ *          0 on timeout.
+ *          >0 length of the inputline (including final \n) 
+ *
+ */
 int
 tty_recv (struct tty *t, uint8_t *buf, uint32_t *timeout)
 {
