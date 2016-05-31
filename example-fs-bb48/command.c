@@ -7,8 +7,13 @@
 #include "adc.h"
 static int adc_initialized = 0;
 #endif
-#include "sys.h"
 #include "board.h"
+#ifdef MCU_KINETIS_L
+#include "mcu/sys-mkl27z.h"
+#else
+#include "mcu/sys-stm32.h"
+#undef STM32F10X_MD		/* Prepare for high density device, too.  */
+#endif
 
 struct command_table
 {
@@ -27,15 +32,17 @@ put_line (struct tty *tty, const char *line)
 }
 
 static const char *help_string = 
-  "mdw ADDR [COUNT]\r\n"
-  "mww ADDR VALUE [COUNT]\r\n"
+  "mdw ADDR [COUNT];       memory display word\r\n"
+  "mww ADDR VALUE [COUNT]; memory write word\r\n"
+  "fes ADDR [COUNT];       flash erase sector\r\n"
+  "fww ADDR VALUE [COUNT]; flash write word\r\n"
 #ifdef CRC32_SUPPORT
-  "crc32 string\r\n"
+  "crc32 string;           CRC32 calc string\r\n"
 #endif
 #ifdef ADC_SUPPORT
-  "adc\r\n"
+  "adc;                    get 256-byte from ADC\r\n"
 #endif
-  "sysinfo\r\n"
+  "sysinfo;                system information\r\n"
   "help\r\n";
 
 static char hexchar (uint8_t x)
@@ -101,6 +108,46 @@ compose_hex (char *s, uint32_t v)
   return s+8;
 }
 
+static const char *
+get_hex (struct tty *tty, const char *s, uint32_t *v_p)
+{
+  uint32_t v = 0;
+  char c;
+
+  if (s[0] == '0' && s[1] == 'x')
+    s = s + 2;
+  while (1)
+    {
+      c = *s++;
+
+      if (c == 0)
+	{
+	  s--;
+	  break;
+	}
+
+      if (c == ' ')
+	break;
+
+      v = (v << 4);
+      if (c >= '0' && c <= '9')
+	v += (c - '0');
+      else if (c >= 'a' && c <= 'f')
+	v += (c - 'a') + 10;
+      else if (c >= 'A' && c <= 'F')
+	v += (c - 'A') + 10;
+      else
+	{
+	  put_line (tty, "hex error\r\n");
+	  return NULL;
+	}
+    }
+
+  *v_p = v;
+  return s;
+}
+
+
 static void
 cmd_mdw (struct tty *tty, const char *line)
 {
@@ -108,43 +155,20 @@ cmd_mdw (struct tty *tty, const char *line)
   uint32_t addr = 0;
   int count = 0;
   char c;
-
-  if (line[0] == '0' && line[1] == 'x')
-    line = line + 2;
-  while (1)
-    {
-      c = *line++;
-
-      if (c == 0)
-	{
-	  count = 1;
-	  break;
-	}
-
-      if (c == ' ')
-	break;
-
-      addr = (addr << 4);
-      if (c >= '0' && c <= '9')
-	addr += (c - '0');
-      else if (c >= 'a' && c <= 'f')
-	addr += (c - 'a') + 10;
-      else if (c >= 'A' && c <= 'F')
-	addr += (c - 'A') + 10;
-      else
-	{
-	  put_line (tty, "mdw error\r\n");
-	  return;
-	}
-    }
-
+  const char *s = line;
+  
+  s = get_hex (tty, s, &addr);
   addr &= ~3;
+  if (s == NULL)
+    return;
 
-  if (count == 0)
+  if (*s == 0)
+    count = 1;
+  else
     {
       while (1)
 	{
-	  c = *line++;
+	  c = *s++;
 
 	  if (c == 0 || c == ' ')
 	    break;
@@ -194,6 +218,98 @@ cmd_mww (struct tty *tty, const char *line)
   (void)tty;
   (void)line;
   put_line (tty, "mww not yet supported\r\n");
+}
+
+static void
+cmd_fes (struct tty *tty, const char *line)
+{
+  int i;
+  uint32_t addr = 0;
+  int count = 0;
+  char c;
+  const char *s = line;
+  
+  s = get_hex (tty, s, &addr);
+  if (s == NULL)
+    return;
+
+  if (*s == 0)
+    count = 1;
+  else
+    {
+      while (1)
+	{
+	  c = *s++;
+
+	  if (c == 0 || c == ' ')
+	    break;
+
+	  count = count * 10;
+	  if (c >= '0' && c <= '9')
+	    count += c - '0';
+	  else
+	    {
+	      put_line (tty, "fww error\r\n");
+	      return;
+	    }
+	}
+    }
+
+  for (i = 0; i < count; i++)
+    {
+      flash_erase_page (addr);
+      addr += 1024;
+    }
+}
+
+static void
+cmd_fww (struct tty *tty, const char *line)
+{
+  int i;
+  uint32_t addr = 0;
+  uint32_t value = 0;
+  int count = 0;
+  char c;
+  const char *s = line;
+  
+  s = get_hex (tty, s, &addr);
+  if (s == NULL)
+    return;
+
+  if (*s == 0)
+    return;
+
+  s = get_hex (tty, s, &value);
+  if (s == NULL)
+    return;
+
+  if (*s == 0)
+    count = 1;
+  else
+    {
+      while (1)
+	{
+	  c = *s++;
+
+	  if (c == 0 || c == ' ')
+	    break;
+
+	  count = count * 10;
+	  if (c >= '0' && c <= '9')
+	    count += c - '0';
+	  else
+	    {
+	      put_line (tty, "fww error\r\n");
+	      return;
+	    }
+	}
+    }
+
+  for (i = 0; i < count; i++)
+    {
+      flash_program_word (addr, value);
+      addr += 4;
+    }
 }
 
 
@@ -316,6 +432,8 @@ cmd_help (struct tty *tty, const char *line)
 struct command_table command_table[] = {
   { "mdw", cmd_mdw },
   { "mww", cmd_mww },
+  { "fes", cmd_fes },
+  { "fww", cmd_fww },
 #ifdef CRC32_SUPPORT
   { "crc32", cmd_crc32 },
 #endif

@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "sys.h"
+#include "sys-stm32f103.h"
 #include "usb_lld.h"
 
 #define USB_MAX_PACKET_SIZE 64	/* For FS device */
@@ -885,8 +885,10 @@ usb_handle_transfer (uint16_t istr_value)
 
       if ((ep_value & EP_CTR_TX))
 	{
+	  uint32_t len = st103_get_tx_count (ep_index);
+
 	  st103_ep_clear_ctr_tx (ep_index);
-	  usb_cb_tx_done (ep_index);
+	  usb_cb_tx_done (ep_index, len, 1);
 	}
     }
 }
@@ -972,7 +974,7 @@ void usb_lld_setup_endpoint (int ep_num, int ep_type, int ep_kind,
 
   if (ep_rx_addr)
     {
-      ep_rxtx_status |= EP_RX_VALID;
+      ep_rxtx_status |= EP_RX_NAK;
       st103_set_rx_addr (ep_num, ep_rx_addr);
       st103_set_rx_buf_size (ep_num, ep_rx_buf_size);
     }
