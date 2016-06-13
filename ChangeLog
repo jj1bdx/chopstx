@@ -1,3 +1,34 @@
+2016-06-10  NIIBE Yutaka  <gniibe@fsij.org>
+
+	* usb_lld.h (USB_EVENT_OK): Rename.
+	* mcu/usb-stm32f103.c: Update.
+	* mcu/usb-mkl27z.c: Likewise.
+
+	* example-cdc/usb-cdc.c: Follow the change of API.
+	* example-fs-bb48/usb-cdc.c: Likewise.
+
+2016-06-09  NIIBE Yutaka  <gniibe@fsij.org>
+
+	* mcu/usb-stm32f103.c (usb_lld_ctrl_recv): Rename.
+	(usb_lld_ctrl_send): Rename.
+	(usb_lld_ctrl_ack): Rename and let have return value.
+	* mcu/usb-mkl27z.c: Likewise.
+
+	* example-cdc/usb-cdc.c: Follow the change of API.
+	* example-fs-bb48/usb-cdc.c: Likewise.
+
+2016-06-08  NIIBE Yutaka  <gniibe@fsij.org>
+
+	* mcu/usb-stm32f103.c: Rewrite to be event driven API.
+	* mcu/usb-mkl27z.c: Likewise.
+
+	* example-cdc/usb-cdc.c: Update to new USB API.
+	* example-fs-bb48/usb-cdc.c: Likewise.
+
+	* example-cdc/tty.h: Change tty API to be C string (char*)
+	friendly.
+	* example-fs-bb48/tty.h: Ditto.
+
 2016-06-02  Niibe Yutaka  <gniibe@fsij.org>
 
 	* contrib/adc-mkl27z.c: Move from mcu.
