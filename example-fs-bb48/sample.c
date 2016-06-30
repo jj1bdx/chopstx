@@ -7,27 +7,7 @@
 #include "tty.h"
 #include "board.h"
 #include "command.h"
-
-struct GPIO {
-  volatile uint32_t PDOR; /* Port Data Output Register    */
-  volatile uint32_t PSOR; /* Port Set Output Register     */
-  volatile uint32_t PCOR; /* Port Clear Output Register   */
-  volatile uint32_t PTOR; /* Port Toggle Output Register  */
-  volatile uint32_t PDIR; /* Port Data Input Register     */
-  volatile uint32_t PDDR; /* Port Data Direction Register */
-};
-static struct GPIO *const GPIOB = (struct GPIO *const)0x400FF040;
-static struct GPIO *const GPIOD = (struct GPIO *const)0x400FF0C0;
-static struct GPIO *const GPIOE = (struct GPIO *const)0x400FF100;
-
-static void
-set_led (int on)
-{
-  if (on)
-    GPIOB->PCOR = (1 << 0); /* PTB0: Clear: Light on  */
-  else
-    GPIOB->PSOR = (1 << 0); /* PTB0: Set  : Light off */
-}
+#include <sys.h>
 
 static chopstx_mutex_t mtx;
 static chopstx_cond_t cnd0;
@@ -117,6 +97,8 @@ static char hexchar (uint8_t x)
 }
 
 
+extern void touch_init (void);
+
 int
 main (int argc, const char *argv[])
 {
@@ -143,6 +125,8 @@ main (int argc, const char *argv[])
   chopstx_mutex_unlock (&mtx);
 
   u = 1;
+
+  touch_init ();
 
   tty = tty_open ();
   tty_wait_configured (tty);

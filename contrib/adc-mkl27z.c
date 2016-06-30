@@ -40,7 +40,7 @@ struct DMAMUX {
   volatile uint32_t CHCFG2;
   volatile uint32_t CHCFG3;
 };
-static struct DMAMUX *const DMAMUX = (struct DMAMUX *const)0x40021000;
+static struct DMAMUX *const DMAMUX = (struct DMAMUX *)0x40021000;
 
 #define INTR_REQ_DMA0 0
 
@@ -50,8 +50,8 @@ struct DMA {
   volatile uint32_t DSR_BCR;
   volatile uint32_t DCR;
 };
-static struct DMA *const DMA0 = (struct DMA *const)0x40008100;
-static struct DMA *const DMA1 = (struct DMA *const)0x40008110;
+static struct DMA *const DMA0 = (struct DMA *)0x40008100;
+static struct DMA *const DMA1 = (struct DMA *)0x40008110;
 
 
 /* We don't use ADC interrupt.  Just for reference.  */
@@ -92,7 +92,7 @@ struct ADC {
   volatile uint32_t CLM1;
   volatile uint32_t CLM0;
 };
-static struct ADC *const ADC0 = (struct ADC *const)0x4003B000;
+static struct ADC *const ADC0 = (struct ADC *)0x4003B000;
 
 /* SC1 */
 #define ADC_SC1_DIFF            (1 << 5)
@@ -295,12 +295,13 @@ adc_stop (void)
 int
 adc_wait_completion (void)
 {
+  struct chx_poll_head *pd_array[1] = { (struct chx_poll_head *)&adc_intr };
+  int i;
+
   while (1)
     {
-      int i;
-
       /* Wait DMA completion */
-      chopstx_poll (NULL, 1, &adc_intr);
+      chopstx_poll (NULL, 1, pd_array);
 
       DMA0->DSR_BCR = (1 << 24);
       DMA1->DSR_BCR = (1 << 24);

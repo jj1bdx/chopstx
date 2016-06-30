@@ -38,7 +38,7 @@ struct MCG {
   uint8_t reserved2[15]; /*                                    */
   volatile uint8_t MC;   /* MCG Miscellaneous Control Register */
 };
-static struct MCG *const MCG = (struct MCG *const)0x40064000;
+static struct MCG *const MCG = (struct MCG *)0x40064000;
 
 struct USB_CLK_RECOVER {
   volatile uint8_t CTRL;           /* USB Clock             */
@@ -51,7 +51,7 @@ struct USB_CLK_RECOVER {
                                    /*     interrupt status  */
 };
 static struct USB_CLK_RECOVER *const USB_CLK_RECOVER =
-  (struct USB_CLK_RECOVER *const)0x40072140;
+  (struct USB_CLK_RECOVER *)0x40072140;
 
 static void __attribute__((used))
 clock_init (void)
@@ -66,54 +66,18 @@ clock_init (void)
   while ((MCG->S & 0x0c) != 0)
     ;
 
-  SIM->SOPT2 = 0x00040060;	/* USBSRC=IRC48, CLOKOUTSEL=LPO, RTC-clock */
+  /* TPMSRC=IRC48M, USBSRC=IRC48M, CLOKOUTSEL=LPO, RTC-clock */
+  SIM->SOPT2 = 0x01040060;
 
-  SIM->SCGC4 = (1 << 18);	/* Enable USB FS clock         */
+  SIM->SCGC4 = (1 << 18);	/* Enable USB FS clock        */
   SIM->SCGC5 = (1 << 10);	/* Enable Port B clock        */
+  SIM->SCGC6 = (1 << 25)|1;	/* Enable TPM1 clock          */
   SIM->COPC = 0;		/* COP disabled               */
 
   /* Crystal-less USB setup.  */
   USB_CLK_RECOVER->IRC_EN = 0x02;
   USB_CLK_RECOVER->CTRL = 0x80;
 }
-
-
-struct PORT {
-  volatile uint32_t PCR0;  volatile uint32_t PCR1;
-  volatile uint32_t PCR2;  volatile uint32_t PCR3;
-  volatile uint32_t PCR4;  volatile uint32_t PCR5;
-  volatile uint32_t PCR6;  volatile uint32_t PCR7;
-  volatile uint32_t PCR8;  volatile uint32_t PCR9;
-  volatile uint32_t PCR10; volatile uint32_t PCR11;
-  volatile uint32_t PCR12; volatile uint32_t PCR13;
-  volatile uint32_t PCR14; volatile uint32_t PCR15;
-  volatile uint32_t PCR16; volatile uint32_t PCR17;
-  volatile uint32_t PCR18; volatile uint32_t PCR19;
-  volatile uint32_t PCR20; volatile uint32_t PCR21;
-  volatile uint32_t PCR22; volatile uint32_t PCR23;
-  volatile uint32_t PCR24; volatile uint32_t PCR25;
-  volatile uint32_t PCR26; volatile uint32_t PCR27;
-  volatile uint32_t PCR28; volatile uint32_t PCR29;
-  volatile uint32_t PCR30; volatile uint32_t PCR31;
-  volatile uint32_t GPCLR; volatile uint32_t GPCHR;
-  uint32_t reserved[6];
-  volatile uint32_t ISFR;
-};
-static struct PORT *const PORTB = (struct PORT *const)0x4004A000;
-static struct PORT *const PORTD = (struct PORT *const)0x4004C000;
-static struct PORT *const PORTE = (struct PORT *const)0x4004D000;
-
-struct GPIO {
-  volatile uint32_t PDOR; /* Port Data Output Register    */
-  volatile uint32_t PSOR; /* Port Set Output Register     */
-  volatile uint32_t PCOR; /* Port Clear Output Register   */
-  volatile uint32_t PTOR; /* Port Toggle Output Register  */
-  volatile uint32_t PDIR; /* Port Data Input Register     */
-  volatile uint32_t PDDR; /* Port Data Direction Register */
-};
-static struct GPIO *const GPIOB = (struct GPIO *const)0x400FF040;
-static struct GPIO *const GPIOD = (struct GPIO *const)0x400FF0C0;
-static struct GPIO *const GPIOE = (struct GPIO *const)0x400FF100;
 
 
 static void __attribute__((used))
